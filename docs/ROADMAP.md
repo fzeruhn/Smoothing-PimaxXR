@@ -1,7 +1,5 @@
 # Runtime Motion-Smoothing Roadmap
 
-Note: the root-level `AGENTS.md`, `ARCHITECTURE.md`, and `ROADMAP.md` describe the abandoned API-layer direction. For this fork, the files under `docs/` are the source of truth.
-
 ## Project Context
 
 This roadmap is for completing runtime-integrated motion smoothing inside `pimax-openxr`. The work is intentionally sequenced around the current runtime, not the old API-layer attempt.
@@ -114,7 +112,7 @@ Make depth input usable and predictable for reprojection and synthesis.
 
 ### Objective
 
-Integrate OFA or an equivalent motion-estimation path against runtime-owned frames.
+Integrate NVIDIA OFA against runtime-owned frames.
 
 ### Main Implementation Areas
 
@@ -147,7 +145,7 @@ Generate submission-ready intermediate frames for arbitrary fractional display t
 
 ### Main Implementation Areas
 
-- implement forward / backward or equivalent interpolation strategy
+- implement bi-directional interpolation strategy
 - resolve occlusions with depth and confidence inputs
 - add a deterministic hole-filling stage
 - produce runtime-owned synthesized output images ready for scheduler consumption

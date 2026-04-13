@@ -1,7 +1,5 @@
 # Runtime Motion-Smoothing Fork - Engineer Context
 
-Note: the root-level `AGENTS.md`, `ARCHITECTURE.md`, and `ROADMAP.md` describe the abandoned API-layer direction. For this fork, the files under `docs/` are the source of truth.
-
 ## Project Context
 
 This repository is a fork of the PimaxXR runtime. The motion-smoothing goal for this fork is no longer to inject frames from an external OpenXR API layer. The runtime itself already owns the frame lifecycle that matters:

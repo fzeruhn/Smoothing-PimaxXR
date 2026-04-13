@@ -1,7 +1,5 @@
 # Runtime Motion-Smoothing Architecture
 
-Note: the root-level `AGENTS.md`, `ARCHITECTURE.md`, and `ROADMAP.md` describe the abandoned API-layer direction. For this fork, the files under `docs/` are the source of truth.
-
 ## Project Context
 
 This fork adds runtime-integrated motion smoothing to `pimax-openxr`. The runtime already owns the frame pacing and compositor submission path, so the architecture is built around extending existing runtime responsibilities instead of intercepting another runtime from the outside.

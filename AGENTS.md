@@ -75,6 +75,16 @@ So the correct design is not "Vulkan only exists" and not "three fully separate 
 - Existing frame timing, running-start, deferred frame wait, and lock-framerate behavior
 - Existing GPU timing and tracing hooks useful for observability
 
+### Provided By Hardware And PVR SDK (Not Our Job)
+
+- **Late-Stage Reprojection (LSR):** The headset and PVR SDK perform always-on 3-DOF rotational reprojection at display refresh rate. If the app or motion smoothing fails to deliver a frame, LSR still corrects for head rotation so the user does not get motion sick. This is a safety net that runs underneath our code at all times.
+- **Lens Distortion:** The PVR SDK handles the warping required for the Pimax lenses.
+- **Chromatic Aberration Correction:** Handled by the PVR SDK.
+- **V-Sync and Display Latching:** The PVR SDK knows exactly when the physical screen needs the next pixel.
+- **Controller Tracking:** OpenXR already maps the inputs.
+
+Our focus is exclusively: take two frames, generate motion vectors, synthesize a middle frame, and hand it to the existing compositor. When synthesis is unavailable or fails, we pass the most recent real frame and let the headset's LSR handle rotational correction.
+
 ### Missing For Motion Smoothing
 
 - A runtime-owned frame-history ring for color, depth, pose, and timestamps
@@ -86,7 +96,7 @@ So the correct design is not "Vulkan only exists" and not "three fully separate 
 - Pose reprojection and head-motion removal before motion estimation
 - Stereo vector adaptation strategy
 - Frame synthesis and hole-filling stages
-- A scheduler that chooses real frame vs synthesized frame vs late reprojection at headset cadence
+- A scheduler that chooses real frame vs synthesized frame at headset cadence
 - A production-safe synchronization model for the chosen graphics path
 
 ## Constraints And Invariants
@@ -119,7 +129,7 @@ The intended completion path for this fork is:
 1. Stabilize frame ownership, capture points, and observability in the current runtime.
 2. Add runtime-owned normalization and history resources that convert D3D11, D3D12, and Vulkan input into Vulkan-backed smoothing data.
 3. Integrate motion estimation and pose reprojection against those Vulkan-backed frames.
-4. Add synthesis and fallback reprojection stages in the Vulkan pipeline.
+4. Add synthesis and hole-filling stages in the Vulkan pipeline.
 5. Bridge the synthesized Vulkan result back into the runtime headset submission path.
 6. Upgrade the runtime scheduler so output cadence tracks the headset refresh rate even when app cadence does not.
 

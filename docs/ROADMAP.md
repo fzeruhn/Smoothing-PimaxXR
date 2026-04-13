@@ -171,7 +171,7 @@ Choose the correct output path at headset cadence even when the app cadence is l
 ### Main Implementation Areas
 
 - compare app frame availability against headset timing targets
-- select between fresh real frame, synthesized frame, and fallback reprojection
+- select between fresh real frame or synthesized frame (if neither is ready, pass the most recent real frame and rely on the headset's LSR for rotational correction)
 - redefine the `xrWaitFrame` contract once synthetic cadence is active
 - integrate scheduling decisions into the runtime submission path before `pvr_endFrame`
 - preserve valid OpenXR and PVR timing semantics
@@ -197,7 +197,7 @@ Harden the feature for repeated game testing and future iteration.
 
 ### Main Implementation Areas
 
-- add late-stage reprojection fallback when synthesis is unavailable
+- validate graceful degradation to stale frames when synthesis is unavailable due to app fps being too low (the headset's LSR handles rotational correction)
 - tune latency, queue depth, and history policy
 - validate in target games, especially Vulkan titles
 - add operational toggles for baseline, capture-only, synthesis, and full scheduler modes

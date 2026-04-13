@@ -21,6 +21,19 @@ Today, the runtime already does the following:
 
 That means the runtime already has the authority needed to implement motion smoothing. What it does not have yet is a dedicated synthesis pipeline and a scheduler that can emit headset-rate output from an arbitrary app frame cadence.
 
+## Scope: Motion Smoothing vs. Late-Stage Reprojection
+
+It is crucial to understand that motion smoothing and Late-Stage Reprojection (LSR) are two completely different systems that run sequentially.
+
+- **Motion Smoothing (Our Job):** Fixes animation and translation. If a spaceship is flying past the user, or they are waving their hands, motion smoothing synthesizes the missing frames so objects move fluidly across the screen.
+- **Late-Stage Reprojection (Not Our Job):** Fixes head rotation (3-DOF). This is an always-on spatial reprojection process handled by the headset and PVR SDK at display refresh rate.
+
+When the app drops to very low FPS (e.g. 10 FPS), our motion smoothing will likely fail because motion vectors between frames are too large to synthesize a clean image. In this scenario, our system passes the stale frames to the headset. LSR will still run at 90Hz, taking the stale frame and spatially rotating it to match the user's head movement at the millisecond of display. The result: objects will look like a slideshow, but looking around will feel smooth and the user won't get motion sick.
+
+LSR is a safety net that is always active underneath us.
+
+Our entire focus is isolated to: take two images, generate motion vectors, synthesize (a) middle image(s), and hand it to the existing compositor.
+
 ## Target Direction
 
 ### High-Level Pipeline
@@ -33,12 +46,12 @@ That means the runtime already has the authority needed to implement motion smoo
    - timestamps and frame identifiers
 3. The runtime translates the incoming API-specific resources into Vulkan-backed smoothing resources, then copies or aliases them into runtime-owned history resources.
 4. Motion estimation derives vectors between adjacent history frames.
-5. Pose reprojection removes head motion from the estimation path and provides a late-stage fallback transform.
+5. Pose reprojection removes head motion from the estimation path so motion vectors reflect scene motion only.
 6. Frame synthesis generates an intermediate frame for the target display time.
 7. A submission scheduler decides whether to submit:
    - a fresh real frame
    - a synthesized frame
-   - a late reprojected fallback frame
+   When synthesis is unavailable, the scheduler passes the most recent real frame. The headset's LSR handles rotational correction.
 8. The runtime packages the chosen result into the compositor submission path and completes `pvr_endFrame`.
 
 ## Subsystems
@@ -109,7 +122,7 @@ This stage produces runtime-owned submission-ready images rather than patching a
 Responsibilities:
 
 - observe app cadence and headset cadence
-- decide whether the next output should be a real frame, a synthesized frame, or a fallback reprojection
+- decide whether the next output should be a real frame or a synthesized frame (when neither is available, pass the most recent real frame and rely on the headset's LSR for rotational correction)
 - preserve valid OpenXR and PVR frame ordering
 - avoid stalling the app thread where possible
 - define what `xrWaitFrame` tells the application once runtime cadence diverges from direct headset cadence

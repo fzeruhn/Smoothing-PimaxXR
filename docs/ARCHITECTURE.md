@@ -44,9 +44,13 @@ Our entire focus is isolated to: take two images, generate motion vectors, synth
    - depth when available
    - render pose / view state
    - timestamps and frame identifiers
+   - app-provided motion vectors and depth via `XrCompositionLayerSpaceWarpInfoFB`, when the app attaches this struct to its projection layers
 3. The runtime translates the incoming API-specific resources into Vulkan-backed smoothing resources, then copies or aliases them into runtime-owned history resources.
-4. Motion estimation derives vectors between adjacent history frames.
-5. Pose reprojection removes head motion from the estimation path so motion vectors reflect scene motion only.
+4. Motion-vector sourcing follows a dual-path model:
+   - **Application SpaceWarp path:** If the app provided motion vectors via `XR_FB_space_warp`, the runtime ingests them directly. No OFA estimation or pose-reprojection is needed because the app vectors already represent true scene motion. This path saves ~1–2.5 ms of GPU time per frame and eliminates estimation artifacts around UI elements, particle effects, and transparent surfaces.
+   - **OFA estimation path:** If the app did not provide vectors, the runtime runs motion estimation (NVIDIA OFA) against adjacent history frames and removes head-motion bias via pose reprojection. This is the fallback for the majority of PCVR titles.
+   - Both paths produce vectors in a common internal format and feed into the same downstream synthesis pipeline.
+5. Pose reprojection removes head motion from the estimation path so motion vectors reflect scene motion only. (Skipped when using Application SpaceWarp vectors, which already represent scene motion.)
 6. Frame synthesis generates an intermediate frame for the target display time.
 7. A submission scheduler decides whether to submit:
    - a fresh real frame
@@ -62,6 +66,7 @@ Responsibilities:
 
 - capture the app-submitted frame at `xrEndFrame`
 - retain color, depth, pose, and timestamps in runtime-owned history slots
+- detect `XrCompositionLayerSpaceWarpInfoFB` in the composition-layer chain and capture app-provided motion-vector and depth images when present
 - keep history lifetime independent from app swapchain reuse
 - provide bounded buffering and explicit overload behavior
 - normalize D3D11, D3D12, and Vulkan input into a Vulkan-backed representation immediately or at a clearly defined capture boundary
@@ -88,9 +93,47 @@ Primary integration points:
 - `frame.cpp` for composition-layer chain parsing
 - interop files for API-specific image access and transitions
 
-### Motion-Vector Generation
+### Motion-Vector Sourcing
 
-Responsibilities:
+Motion vectors can arrive from two completely different sources. The runtime must support both and select between them on every frame.
+
+#### Application SpaceWarp (`XR_FB_space_warp`)
+
+When the application supports the `XR_FB_space_warp` extension:
+
+1. During session creation, the application queries the runtime for `XR_FB_space_warp` support. The runtime advertises the extension.
+2. The application creates dedicated swapchains for motion vectors (typically `R16G16B16A16_SFLOAT`) and depth.
+3. At `xrEndFrame`, the application attaches an `XrCompositionLayerSpaceWarpInfoFB` struct to each projection layer. This struct references the motion-vector image, the depth image, and associated near/far plane metadata.
+4. The runtime detects the struct in the composition-layer chain, ingests the app-provided vectors, and skips OFA entirely for that frame.
+
+App-provided vectors are superior in every measurable metric:
+
+- **No GPU overhead for estimation:** OFA costs ~1–2.5 ms per frame. Application SpaceWarp costs the runtime zero estimation time because modern engines already compute perfect motion vectors for TAA/DLSS/FSR and exporting them is essentially free.
+- **No estimation artifacts:** OFA guesses where things moved by comparing pixels. It cannot distinguish UI overlays from 3D geometry, and it struggles with transparency, particles, and specular highlights. App vectors know exactly what moved and by how much.
+- **Perfect per-object motion:** Engine vectors capture animation, physics, and camera-relative motion with sub-pixel precision. OFA can only approximate these from rasterized output.
+
+#### OFA Estimation (Runtime Fallback)
+
+When the application does not provide motion vectors (the common case for most PCVR games), the runtime falls back to hardware-accelerated optical flow:
+
+- Runs NVIDIA OFA (or equivalent) against adjacent Vulkan-backed history frames
+- Removes head-motion bias via pose reprojection before estimation
+- Produces vectors with confidence and validity metadata
+
+This path is always available and does not depend on any application cooperation.
+
+#### Common Vector Interface
+
+Both paths must produce motion vectors in a single internal representation before reaching synthesis (though maybe with different resolutions). The downstream pipeline (synthesis, hole filling, scheduling) must not need to know whether the vectors came from the app or from OFA. The common interface includes:
+
+- per-pixel motion vectors in a defined coordinate space and format
+- per-pixel confidence or validity when available (OFA provides this inherently; app vectors are assumed high-confidence)
+- associated depth for occlusion reasoning
+- source tag for diagnostics (app-provided vs. OFA-estimated)
+
+### Motion Estimation (OFA Path Details)
+
+Responsibilities (when Application SpaceWarp vectors are not available):
 
 - compute motion vectors from adjacent runtime-owned frames
 - remove head-motion bias before or during estimation
@@ -220,6 +263,13 @@ Without this, cadence behavior will become unstable under real game load.
 
 Do not assume that a separate high-priority queue is always available. The architecture must remain valid without that guarantee.
 
+### Gate G: Application SpaceWarp Vector Format And Coordinate Normalization
+
+- Define how `XrCompositionLayerSpaceWarpInfoFB` motion-vector images are interpreted: coordinate space, scale, and handedness
+- Define the mapping from app-provided vector format into the common internal motion-vector representation used by synthesis
+- Define how app-provided depth from the SpaceWarp struct relates to the depth normalization policy from Gate D
+- Define validation and sanity-checking for app-provided vectors (range checks, NaN handling, coverage thresholds) so malformed input degrades to OFA fallback rather than producing corrupt synthesis output
+
 ## Completion Path
 
 The architecture should be implemented in this order:
@@ -228,10 +278,12 @@ The architecture should be implemented in this order:
 2. Define the input normalization path that converts D3D11, D3D12, and Vulkan input into Vulkan-backed smoothing resources.
 3. Define pooled allocation, VRAM budgeting, and overload policy for Vulkan-backed history.
 4. Normalize depth and timestamp handling.
-5. Add motion estimation and reprojection in Vulkan.
-6. Add synthesis and hole filling in Vulkan.
-7. Define how synthesized Vulkan output is handed back to the headset submission backend.
-8. Define the `xrWaitFrame` pacing contract and add scheduler decisions at headset cadence.
-9. Tune performance, queue strategy, fallback behavior, and diagnostics.
+5. Advertise `XR_FB_space_warp` and implement detection and ingestion of app-provided motion vectors at `xrEndFrame`.
+6. Add OFA-based motion estimation and pose reprojection in Vulkan for apps that do not provide vectors.
+7. Define the common motion-vector interface that both Application SpaceWarp and OFA paths feed into.
+8. Add synthesis and hole filling in Vulkan (consuming the common vector interface).
+9. Define how synthesized Vulkan output is handed back to the headset submission backend.
+10. Define the `xrWaitFrame` pacing contract and add scheduler decisions at headset cadence.
+11. Tune performance, queue strategy, fallback behavior, and diagnostics.
 
 See `docs/ROADMAP.md` for the execution phases.

@@ -76,12 +76,6 @@ So the correct design is not "Vulkan only exists" and not "three fully separate 
 - Existing frame timing, running-start, deferred frame wait, and lock-framerate behavior
 - Existing GPU timing and tracing hooks useful for observability
 
-### Planned: Application SpaceWarp (`XR_FB_space_warp`)
-
-The runtime will advertise the `XR_FB_space_warp` extension. When an application supports it, the app creates dedicated motion-vector and depth swapchains and attaches an `XrCompositionLayerSpaceWarpInfoFB` struct to its projection layers at `xrEndFrame`. The runtime detects this struct and uses the app-provided motion vectors directly, bypassing OFA-based motion estimation entirely.
-
-When the extension is not used by the app (the common case for most PCVR titles today), the system falls back to OFA-based motion estimation as designed. This is a per-frame check: if the struct is present, use app vectors; if absent, run OFA. Both paths feed into the same downstream synthesis and scheduling pipeline.
-
 ### Provided By Hardware And PVR SDK (Not Our Job)
 
 - **Late-Stage Reprojection (LSR):** The headset and PVR SDK perform always-on 3-DOF rotational reprojection at display refresh rate. If the app or our motion smoothing fails to deliver a frame (either due to failed smoothing or the incoming app fps being too low to smooth), LSR still corrects for head rotation so the user does not get motion sick. This is a safety net that runs underneath our code at all times.

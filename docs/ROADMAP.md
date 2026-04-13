@@ -137,7 +137,7 @@ Establish both motion-vector sources and a common vector interface that feeds sy
 #### 3C - Common Motion-Vector Interface
 
 - define a single internal motion-vector representation consumed by synthesis
-- both Application SpaceWarp and OFA paths produce output in this format
+- both Application SpaceWarp and OFA paths produce output in this format - though maybe with different resolutions
 - include per-pixel confidence metadata (high-confidence for app vectors, OFA-reported for estimated vectors)
 - include a source tag for diagnostics and telemetry
 

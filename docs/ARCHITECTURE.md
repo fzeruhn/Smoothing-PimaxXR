@@ -48,7 +48,7 @@ Our entire focus is isolated to: take two images, generate motion vectors, synth
 3. The runtime translates the incoming API-specific resources into Vulkan-backed smoothing resources, then copies or aliases them into runtime-owned history resources.
 4. Motion-vector sourcing follows a dual-path model:
    - **Application SpaceWarp path:** If the app provided motion vectors via `XR_FB_space_warp`, the runtime ingests them directly. No OFA estimation or pose-reprojection is needed because the app vectors already represent true scene motion. This path saves ~1–2.5 ms of GPU time per frame and eliminates estimation artifacts around UI elements, particle effects, and transparent surfaces.
-   - **OFA estimation path:** If the app did not provide vectors, the runtime runs motion estimation (e.g. NVIDIA OFA) against adjacent history frames and removes head-motion bias via pose reprojection. This is the fallback for the majority of PCVR titles.
+   - **OFA estimation path:** If the app did not provide vectors, the runtime runs motion estimation (NVIDIA OFA) against adjacent history frames and removes head-motion bias via pose reprojection. This is the fallback for the majority of PCVR titles.
    - Both paths produce vectors in a common internal format and feed into the same downstream synthesis pipeline.
 5. Pose reprojection removes head motion from the estimation path so motion vectors reflect scene motion only. (Skipped when using Application SpaceWarp vectors, which already represent scene motion.)
 6. Frame synthesis generates an intermediate frame for the target display time.
@@ -112,21 +112,19 @@ App-provided vectors are superior in every measurable metric:
 - **No estimation artifacts:** OFA guesses where things moved by comparing pixels. It cannot distinguish UI overlays from 3D geometry, and it struggles with transparency, particles, and specular highlights. App vectors know exactly what moved and by how much.
 - **Perfect per-object motion:** Engine vectors capture animation, physics, and camera-relative motion with sub-pixel precision. OFA can only approximate these from rasterized output.
 
-The practical limitation is that very few PCVR titles currently implement `XR_FB_space_warp` natively. The extension originated in the Quest/PICO standalone ecosystem where mobile GPUs cannot afford OFA overhead. PCVR developers have historically relied on generic runtime smoothing. However, the modding community (UEVR, PureDark FrameGen mods) is increasingly hooking into game engines to extract motion vectors, and advertising the extension in this runtime makes that pipeline possible for Pimax hardware.
-
 #### OFA Estimation (Runtime Fallback)
 
 When the application does not provide motion vectors (the common case for most PCVR games), the runtime falls back to hardware-accelerated optical flow:
 
 - Runs NVIDIA OFA (or equivalent) against adjacent Vulkan-backed history frames
-- Removes head-motion bias via pose reprojection before or during estimation
+- Removes head-motion bias via pose reprojection before estimation
 - Produces vectors with confidence and validity metadata
 
 This path is always available and does not depend on any application cooperation.
 
 #### Common Vector Interface
 
-Both paths must produce motion vectors in a single internal representation before reaching synthesis. The downstream pipeline (synthesis, hole filling, scheduling) must not need to know whether the vectors came from the app or from OFA. The common interface includes:
+Both paths must produce motion vectors in a single internal representation before reaching synthesis (though maybe with different resolutions). The downstream pipeline (synthesis, hole filling, scheduling) must not need to know whether the vectors came from the app or from OFA. The common interface includes:
 
 - per-pixel motion vectors in a defined coordinate space and format
 - per-pixel confidence or validity when available (OFA provides this inherently; app vectors are assumed high-confidence)

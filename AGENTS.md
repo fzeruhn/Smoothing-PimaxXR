@@ -77,11 +77,7 @@ So the correct design is not "Vulkan only exists" and not "three fully separate 
 
 ### Provided By Hardware And PVR SDK (Not Our Job)
 
-- **Late-Stage Reprojection (LSR):** The headset and PVR SDK perform always-on 3-DOF rotational reprojection at display refresh rate. If the app or motion smoothing fails to deliver a frame, LSR still corrects for head rotation so the user does not get motion sick. This is a safety net that runs underneath our code at all times.
-- **Lens Distortion:** The PVR SDK handles the warping required for the Pimax lenses.
-- **Chromatic Aberration Correction:** Handled by the PVR SDK.
-- **V-Sync and Display Latching:** The PVR SDK knows exactly when the physical screen needs the next pixel.
-- **Controller Tracking:** OpenXR already maps the inputs.
+- **Late-Stage Reprojection (LSR):** The headset and PVR SDK perform always-on 3-DOF rotational reprojection at display refresh rate. If the app or our motion smoothing fails to deliver a frame (either due to failed smoothing or the incoming app fps beign too low to smooth), LSR still corrects for head rotation so the user does not get motion sick. This is a safety net that runs underneath our code at all times.
 
 Our focus is exclusively: take two frames, generate motion vectors, synthesize a middle frame, and hand it to the existing compositor. When synthesis is unavailable or fails, we pass the most recent real frame and let the headset's LSR handle rotational correction.
 

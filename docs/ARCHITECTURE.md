@@ -32,15 +32,7 @@ When the app drops to very low FPS (e.g. 10 FPS), our motion smoothing will like
 
 LSR is a safety net that is always active underneath us.
 
-### What The PVR SDK And Hardware Handle (Not Our Job)
-
-- **Late-Stage Reprojection (LSR):** Always-on 3-DOF rotational correction at display rate.
-- **Lens Distortion:** Warping required for Pimax lenses.
-- **Chromatic Aberration Correction:** Corrected by the PVR SDK.
-- **V-Sync and Display Latching:** The PVR SDK manages display timing.
-- **Controller Tracking:** OpenXR already maps the inputs.
-
-Our entire focus is isolated to: take two images, generate motion vectors, synthesize a middle image, and hand it to the existing compositor.
+Our entire focus is isolated to: take two images, generate motion vectors, synthesize (a) middle image(s), and hand it to the existing compositor.
 
 ## Target Direction
 

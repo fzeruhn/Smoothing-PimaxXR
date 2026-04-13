@@ -108,13 +108,24 @@ Make depth input usable and predictable for reprojection and synthesis.
 - some target applications may not submit depth consistently
 - depth conventions may vary across engines and renderers
 
-## Phase 3 - Motion Estimation Integration
+## Phase 3 - Motion-Vector Sourcing: Application SpaceWarp And OFA
 
 ### Objective
 
-Integrate NVIDIA OFA against runtime-owned frames.
+Establish both motion-vector sources and a common vector interface that feeds synthesis. Application SpaceWarp (`XR_FB_space_warp`) provides app-engine vectors when available; OFA provides runtime-estimated vectors as the fallback.
 
 ### Main Implementation Areas
+
+#### 3A - Application SpaceWarp Extension Support
+
+- advertise `XR_FB_space_warp` in the runtime's extension list during `xrEnumerateInstanceExtensionProperties`
+- handle app creation of motion-vector swapchains (typically `R16G16B16A16_SFLOAT`) and associated depth swapchains
+- detect `XrCompositionLayerSpaceWarpInfoFB` structs attached to projection layers at `xrEndFrame`
+- ingest app-provided motion-vector and depth images into Vulkan-backed resources alongside the color history
+- validate incoming vectors (range checks, NaN handling, coverage) and fall back to OFA if vectors appear malformed
+- define the coordinate-space and format mapping from the `XR_FB_space_warp` specification into the common internal vector format
+
+#### 3B - OFA Motion Estimation (Fallback Path)
 
 - define the Vulkan motion-estimation path
 - land the non-Vulkan to Vulkan normalization required to feed that estimator
@@ -123,15 +134,28 @@ Integrate NVIDIA OFA against runtime-owned frames.
 - produce vectors, validity, and confidence data for downstream use
 - determine whether stereo uses dual estimation or adapted vectors
 
+#### 3C - Common Motion-Vector Interface
+
+- define a single internal motion-vector representation consumed by synthesis
+- both Application SpaceWarp and OFA paths produce output in this format
+- include per-pixel confidence metadata (high-confidence for app vectors, OFA-reported for estimated vectors)
+- include a source tag for diagnostics and telemetry
+
 ### Exit Criteria
 
-- adjacent history frames produce usable motion vectors
-- motion-estimation latency is measurable and stable
+- runtime advertises `XR_FB_space_warp` and apps that support it can provide vectors
+- when app vectors are present, OFA estimation is skipped entirely for that frame
+- when app vectors are absent, OFA produces usable motion vectors from adjacent history frames
+- both paths produce output in the common vector format
+- motion-estimation latency is measurable and stable (OFA path)
 - compute execution strategy is defined for both dedicated-queue and shared-queue cases
-- vector output is suitable for synthesis input
+- vector output from either path is suitable for synthesis input
+- diagnostics distinguish app-provided from OFA-estimated frames
 
 ### Risks / Blockers
 
+- very few PCVR titles currently implement `XR_FB_space_warp`; initial testing may require a custom test harness or a game mod (e.g. UEVR) that exports vectors
+- `XR_FB_space_warp` vector format and coordinate conventions may differ from OFA output and require non-trivial normalization
 - Vulkan interop may need redesign because of current timeline-semaphore assumptions
 - cross-API translation may become the real bottleneck instead of estimation itself
 - a dedicated compute queue may not be available or may not be safely usable in the bound runtime device path
@@ -150,6 +174,7 @@ Generate submission-ready intermediate frames for arbitrary fractional display t
 - add a deterministic hole-filling stage
 - produce runtime-owned synthesized output images ready for scheduler consumption
 - ensure synthesized Vulkan output can be handed back to the current headset submission backend regardless of input API
+- synthesis consumes the common motion-vector interface and must not depend on vector source (Application SpaceWarp or OFA)
 
 ### Exit Criteria
 
@@ -221,11 +246,12 @@ Work in this order:
 1. Stabilize ownership, capture points, and timing in the current runtime.
 2. Define and validate normalization of D3D11, D3D12, and Vulkan input into Vulkan-backed smoothing resources.
 3. Validate and normalize depth and motion-estimation inputs.
-4. Add synthesis and hole filling in Vulkan.
-5. Bridge synthesized Vulkan output back into headset submission.
-6. Only after that, enable aggressive cadence conversion and production tuning.
+4. Advertise `XR_FB_space_warp` and implement app-provided vector ingestion. Add OFA estimation as the fallback. Define the common vector interface.
+5. Add synthesis and hole filling in Vulkan (consuming the common vector interface).
+6. Bridge synthesized Vulkan output back into headset submission.
+7. Only after that, enable aggressive cadence conversion and production tuning.
 
-This order is mandatory. The scheduler should not be treated as the first major milestone, because it depends on reliable ownership and valid synthesis inputs.
+This order is mandatory. The scheduler should not be treated as the first major milestone, because it depends on reliable ownership and valid synthesis inputs. Application SpaceWarp support is addressed alongside OFA (not after) because the common vector interface must be designed to accommodate both sources from the start.
 
 ## Validation Path
 

@@ -84,7 +84,7 @@ When the extension is not used by the app (the common case for most PCVR titles 
 
 ### Provided By Hardware And PVR SDK (Not Our Job)
 
-- **Late-Stage Reprojection (LSR):** The headset and PVR SDK perform always-on 3-DOF rotational reprojection at display refresh rate. If the app or our motion smoothing fails to deliver a frame (either due to failed smoothing or the incoming app fps beign too low to smooth), LSR still corrects for head rotation so the user does not get motion sick. This is a safety net that runs underneath our code at all times.
+- **Late-Stage Reprojection (LSR):** The headset and PVR SDK perform always-on 3-DOF rotational reprojection at display refresh rate. If the app or our motion smoothing fails to deliver a frame (either due to failed smoothing or the incoming app fps being too low to smooth), LSR still corrects for head rotation so the user does not get motion sick. This is a safety net that runs underneath our code at all times.
 
 Our focus is exclusively: take two frames, generate motion vectors, synthesize a middle frame, and hand it to the existing compositor. When synthesis is unavailable or fails, we pass the most recent real frame and let the headset's LSR handle rotational correction.
 

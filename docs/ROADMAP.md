@@ -175,7 +175,7 @@ Establish all motion-vector sources and a common vector interface that feeds syn
 - compute-shader optical flow will be significantly slower than OFA and may not meet frame-time budget on lower-end GPUs without aggressive foveation or resolution reduction
 - compute-shader flow quality may be lower than OFA; acceptable quality thresholds must be defined and tested
 
-## Phase 3.5 - Foveated Motion-Vector Estimation
+## Phase 3B - Foveated Motion-Vector Estimation
 
 ### Objective
 
@@ -354,7 +354,12 @@ Work in this order:
 8. Only after that, enable aggressive cadence conversion and production tuning.
 9. Add companion-app controls and debug overlay as a final integration and polish phase.
 
-This order is mandatory. The scheduler should not be treated as the first major milestone, because it depends on reliable ownership and valid synthesis inputs. Application SpaceWarp support is addressed alongside OFA and the compute-shader fallback (not after) because the common vector interface must be designed to accommodate all three sources from the start. Foveated estimation is added immediately after the estimation backends because it is a performance multiplier for the compute-shader path especially. The companion-app and overlay work comes last because it depends on stable runtime settings and a functioning pipeline to observe.
+This order is mandatory.
+
+- The scheduler should not be treated as the first major milestone, because it depends on reliable ownership and valid synthesis inputs.
+- Application SpaceWarp support is addressed alongside OFA and the compute-shader fallback (not after) because the common vector interface must be designed to accommodate all three sources from the start.
+- Foveated estimation is added immediately after the estimation backends because it is a performance multiplier for the compute-shader path especially.
+- The companion-app and overlay work comes last because it depends on stable runtime settings and a functioning pipeline to observe.
 
 ## Validation Path
 

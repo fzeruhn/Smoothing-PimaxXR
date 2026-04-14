@@ -141,7 +141,6 @@ Establish all motion-vector sources and a common vector interface that feeds syn
 - use the same Vulkan-backed input pipeline and pose-reprojection logic as the OFA path
 - produce vectors in the same common format with confidence metadata
 - target acceptable quality at higher GPU cost than OFA; this path trades estimation speed for hardware universality
-- validate on AMD, Intel, and older NVIDIA hardware without OFA silicon
 - backend selection (OFA vs. compute-shader) is a session-initialization decision based on device capability detection
 
 #### 3D - Common Motion-Vector Interface
@@ -179,12 +178,11 @@ Establish all motion-vector sources and a common vector interface that feeds syn
 
 ### Objective
 
-Add foveated estimation to the runtime estimation paths (OFA and compute-shader) to reduce optical-flow cost by running full-resolution flow only in the user's gaze region and downsampled flow everywhere else.
+Add foveated estimation to the runtime estimation paths (OFA and compute-shader) to reduce optical-flow cost by running full-resolution flow only in the user's gaze region and downsampled flow everywhere else. This process is skipped either when no eye tracking data is available, or when disabled from config.
 
 ### Main Implementation Areas
 
 - integrate `XR_EXT_eye_gaze_interaction` to acquire per-eye gaze coordinates at `xrEndFrame`
-- define fallback gaze center (optical center of each eye's view) when eye tracking is unavailable
 - implement fovea region calculation: a bounding box centered on the gaze point, sized in pixels or degrees of visual angle (tunable)
 - implement peripheral downsample pass using fast Vulkan hardware blit (bilinear `vkCmdBlitImage` or lightweight compute dispatch)
 - modify the estimation dispatch to process two inputs per eye: full-resolution fovea crop and downsampled periphery
@@ -198,7 +196,7 @@ Add foveated estimation to the runtime estimation paths (OFA and compute-shader)
 - foveated estimation is functional with both OFA and compute-shader backends
 - peripheral vectors are correctly rescaled; no visible motion-magnitude discontinuity at the fovea/periphery boundary
 - total estimation time (downsample + dual flow + rescale) is measurably lower than full-resolution single-pass flow
-- foveated estimation degrades gracefully when eye tracking is unavailable (uses optical-center fallback)
+- foveated estimation disables gracefully when eye tracking is unavailable
 - fovea size and downsample ratio are adjustable at runtime through registry settings
 - diagnostics can visualize the fovea region and report per-region flow timing
 
@@ -207,7 +205,7 @@ Add foveated estimation to the runtime estimation paths (OFA and compute-shader)
 - downsample cost may exceed flow savings at small peripheral areas or low downsample ratios
 - fovea/periphery boundary may produce visible seam artifacts in synthesized output if regions overlap poorly
 - eye-tracking latency or jitter may cause the fovea to lag behind actual gaze, reducing quality in the region the user is currently looking at
-- some Pimax headset models may not support `XR_EXT_eye_gaze_interaction`; fallback to optical center must be robust
+- some Pimax headset models may not support `XR_EXT_eye_gaze_interaction`
 
 ## Phase 4 - Synthesis And Hole Filling
 
@@ -273,7 +271,7 @@ Harden the feature for repeated game testing and future iteration.
 - validate graceful degradation to stale frames when synthesis is unavailable due to app fps being too low (the headset's LSR handles rotational correction)
 - tune latency, queue depth, and history policy
 - validate in target games, especially Vulkan titles
-- validate compute-shader fallback on AMD and Intel hardware
+- validate compute-shader fallback
 - validate foveated estimation quality and performance across different fovea sizes and downsample ratios
 - add operational toggles for baseline, capture-only, synthesis, and full scheduler modes
 - document repeatable test and rollback procedures
@@ -302,7 +300,7 @@ Add motion-smoothing controls to the existing companion app and implement a runt
 
 #### 7A - Companion App GUI Extensions
 
-- add a new motion-smoothing settings panel (or extend `ExperimentalSettings`) in the companion app
+- add a new motion-smoothing settings panel in the companion app
 - implement the following controls, persisted through the existing registry mechanism:
   - master enable/disable toggle for motion smoothing
   - estimation backend selector (Auto / OFA / Compute-Shader) — Auto uses OFA when available, compute-shader otherwise
@@ -317,8 +315,8 @@ Add motion-smoothing controls to the existing companion app and implement a runt
 - implement a lightweight in-headset overlay rendered into the compositor output before `pvr_endFrame`
 - the overlay displays:
   - current motion-vector source per frame (App / OFA / Compute-Shader / None)
-  - synthesis latency (ms) — time from estimation start to synthesized image ready
-  - app cadence (FPS) vs. headset cadence (FPS)
+  - synthesis latency (ms) — time from frame intercepted to synthesized image sent to headset
+  - app cadence (FPS) vs. headset cadence (FPS) & percent of target fps achieved
   - frame history ring depth and recent drop count
   - fovea region visualization: an optional wireframe rectangle showing where the fovea box is positioned on each eye
   - estimation backend in use and whether foveated estimation is active

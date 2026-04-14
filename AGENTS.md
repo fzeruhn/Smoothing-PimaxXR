@@ -89,7 +89,7 @@ Our focus is exclusively: take two frames, generate motion vectors, synthesize a
 - A defined normalization step that converts D3D11, D3D12, and Vulkan inputs into Vulkan-backed smoothing resources
 - A Vulkan-backed history representation for color, depth, pose, and timestamps after normalization
 - Optical-flow / motion-estimation integration such as NVIDIA OFA
-- A compute-shader optical-flow fallback for GPUs that lack NVIDIA OFA hardware (e.g. AMD, Intel, older NVIDIA)
+- A compute-shader optical-flow fallback for GPUs that lack NVIDIA OFA hardware
 - Foveated motion-vector estimation that splits each frame into a high-resolution fovea region (driven by `XR_EXT_eye_gaze_interaction`) and a downsampled periphery, runs optical flow on both regions independently, and scales peripheral vectors back up before synthesis
 - `XR_FB_space_warp` extension advertisement, struct detection, and app-provided motion-vector ingestion as an alternative to runtime-estimated vectors
 - A tri-path motion-vector source abstraction that selects between app-provided vectors (Application SpaceWarp), OFA-estimated vectors, or compute-shader-estimated vectors per frame
@@ -111,7 +111,7 @@ Our focus is exclusively: take two frames, generate motion vectors, synthesize a
 - The runtime already performs API translation into its submission path. Reuse that where practical instead of designing a brand-new per-API submission stack without justification.
 - Vulkan interop currently uses timeline semaphores. Treat that as an implementation constraint that may need redesign for the final smoothing path.
 - Motion-vector estimation must not hard-depend on NVIDIA OFA. A Vulkan compute-shader optical-flow fallback must exist for non-OFA hardware.
-- Foveated motion-vector estimation is applied regardless of whether OFA or compute-shader flow is active. The fovea region is driven by `XR_EXT_eye_gaze_interaction` when available; when eye tracking is unavailable, the fovea defaults to the optical center of each eye's view.
+- Foveated motion-vector estimation is applied regardless of whether OFA or compute-shader flow is active. The fovea region is driven by `XR_EXT_eye_gaze_interaction` when available; when eye tracking is unavailable, this is skipped entirely.
 - Peripheral motion vectors produced from downsampled input must be scaled back by the downsample ratio before reaching synthesis. Failure to rescale will produce incorrect motion magnitude in the periphery.
 - Motion smoothing must not depend on reviving the abandoned API-layer architecture.
 - Runtime behavior must remain debuggable through existing logs, traces, and frame timing instrumentation.

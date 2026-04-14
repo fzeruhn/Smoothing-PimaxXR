@@ -146,7 +146,7 @@ Both app-provided and runtime-estimated paths (OFA and compute-shader) must prod
 
 ### Foveated Motion-Vector Estimation
 
-Foveated estimation is a cross-cutting optimization applied to both runtime estimation backends (OFA and compute-shader). It is not used when the app provides motion vectors via Application SpaceWarp, because those vectors are already computed by the engine at full precision.
+Foveated estimation is a cross-cutting optimization applied to both runtime estimation backends (OFA and compute-shader). It is not used when the app provides motion vectors via Application SpaceWarp, because those vectors are already computed by the engine at full precision. If no eye tracking is available, this process will be skipped completely and motion vectors will be computed on the native images.
 
 #### Rationale
 
@@ -154,7 +154,7 @@ Running optical flow at full native resolution for VR frames (often 4K+ per eye)
 
 #### Pipeline
 
-1. **Gaze acquisition:** At `xrEndFrame`, the runtime queries `XR_EXT_eye_gaze_interaction` to obtain the current gaze point as a 2D screen coordinate per eye. When eye tracking is unavailable, the fovea defaults to the optical center of each eye's view.
+1. **Gaze acquisition:** At `xrEndFrame`, the runtime queries `XR_EXT_eye_gaze_interaction` to obtain the current gaze point as a 2D screen coordinate per eye.
 
 2. **Region split:** The frame is divided into discrete regions of interest:
    - **Fovea (inner region):** A bounding box centered on the gaze coordinate, kept at 100% native resolution. Size is tunable but typically covers 10–15° of visual angle.
@@ -163,7 +163,7 @@ Running optical flow at full native resolution for VR frames (often 4K+ per eye)
 3. **Peripheral downsample:** The periphery is downsampled to a fraction of native resolution (e.g. 25% or 10% area) using a fast Vulkan hardware blit with bilinear sampling. This step must be cheaper than the flow savings it produces; a single `vkCmdBlitImage` or equivalent compute dispatch is sufficient.
 
 4. **Dual optical-flow dispatch:** The estimation backend (OFA or compute-shader) processes two inputs independently:
-   - The full-resolution fovea region (small pixel count, high quality).
+   - The full-resolution fovea region (smaller pixel count, high quality).
    - The downsampled periphery (large spatial coverage, low pixel count).
    Because total pixel count is a fraction of the original frame, estimation time drops proportionally.
 
@@ -177,7 +177,7 @@ Peripheral vectors produced from downsampled input are physically smaller than r
 
 #### Configuration
 
-Foveated estimation parameters (fovea size, peripheral downsample ratio, fallback gaze center) are exposed as runtime settings and should be controllable through the companion app.
+Foveated estimation parameters (fovea size, peripheral downsample ratio) are exposed as runtime settings and should be controllable through the companion app.
 
 ### Motion Estimation (OFA And Compute-Shader Path Details)
 
@@ -258,7 +258,7 @@ Responsibilities:
 Responsibilities:
 
 - extend the existing companion app (`companion/`) with motion-smoothing controls:
-  - master enable/disable toggle for motion smoothing
+  - master enable/disable toggle for the added motion smoothing
   - estimation backend selection (OFA / compute-shader / auto-detect)
   - foveated estimation toggle with adjustable fovea size and peripheral downsample ratio
   - debug overlay enable/disable
@@ -288,7 +288,6 @@ Primary integration points:
 - The architecture must tolerate missing depth by degrading to lower-quality fallback behavior rather than failing outright.
 - Motion-vector estimation must not hard-depend on NVIDIA OFA. A Vulkan compute-shader optical-flow fallback must exist for non-OFA hardware (AMD, Intel, older NVIDIA).
 - Foveated motion-vector estimation is the default for all runtime-estimated paths. Peripheral vectors must be rescaled by the downsample ratio before synthesis.
-- When eye tracking is unavailable, foveated estimation uses the optical center of each eye's view as the fovea center rather than disabling foveation entirely.
 - The scheduler must preserve valid timing semantics even when synthesis misses its deadline.
 - The smoothing pipeline should have one execution backend: Vulkan.
 - The runtime already translates multiple app APIs into a common submission backend. Motion smoothing should reuse or extend that translation model so all three input APIs converge into Vulkan for smoothing, then return to the headset submission path.
@@ -355,16 +354,12 @@ Do not assume that a separate high-priority queue is always available. The archi
 
 - Define how the runtime detects OFA hardware availability at session initialization (e.g. Vulkan extension query, NVAPI, or CUDA capability check)
 - Define fallback order: Application SpaceWarp → OFA → compute-shader
-- Define whether backend selection is a session-lifetime decision or can change per-frame
-- Recommended: backend is locked at session init; per-frame switching adds complexity without clear benefit
 
 ### Gate I: Foveated Estimation Parameters And Gaze Fallback
 
 - Define fovea bounding-box size in pixels or degrees of visual angle
 - Define peripheral downsample ratio (e.g. 4× area reduction = 2× linear reduction)
-- Define gaze fallback center when `XR_EXT_eye_gaze_interaction` is unavailable
 - Define the vector rescale factor and verify it matches the downsample ratio exactly
-- Define whether foveated estimation can be disabled entirely via companion-app toggle for debugging
 
 ## Completion Path
 

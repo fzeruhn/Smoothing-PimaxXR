@@ -89,14 +89,17 @@ Our focus is exclusively: take two frames, generate motion vectors, synthesize a
 - A defined normalization step that converts D3D11, D3D12, and Vulkan inputs into Vulkan-backed smoothing resources
 - A Vulkan-backed history representation for color, depth, pose, and timestamps after normalization
 - Optical-flow / motion-estimation integration such as NVIDIA OFA
-- `XR_FB_space_warp` extension advertisement, struct detection, and app-provided motion-vector ingestion as an alternative to OFA
-- A dual-path motion-vector source abstraction that selects between app-provided vectors (Application SpaceWarp) and runtime-estimated vectors (OFA) per frame
+- A compute-shader optical-flow fallback for GPUs that lack NVIDIA OFA hardware
+- Foveated motion-vector estimation that splits each frame into a high-resolution fovea region (driven by `XR_EXT_eye_gaze_interaction`) and a downsampled periphery, runs optical flow on both regions independently, and scales peripheral vectors back up before synthesis
+- `XR_FB_space_warp` extension advertisement, struct detection, and app-provided motion-vector ingestion as an alternative to runtime-estimated vectors
+- A tri-path motion-vector source abstraction that selects between app-provided vectors (Application SpaceWarp), OFA-estimated vectors, or compute-shader-estimated vectors per frame
 - Depth normalization policy across app conventions
 - Pose reprojection and head-motion removal before motion estimation (OFA path only; app-provided vectors already account for scene motion)
 - Stereo vector adaptation strategy
 - Frame synthesis and hole-filling stages
 - A scheduler that chooses real frame vs synthesized frame at headset cadence
 - A production-safe synchronization model for the chosen graphics path
+- Companion-app GUI extensions for motion-smoothing toggles (enable/disable smoothing, foveated flow, estimation backend selection) and a runtime debug overlay showing smoothing performance metrics (synthesis latency, vector source, frame cadence, fovea region)
 
 ## Constraints And Invariants
 
@@ -107,6 +110,9 @@ Our focus is exclusively: take two frames, generate motion vectors, synthesize a
 - The smoothing pipeline itself should run in Vulkan. Non-Vulkan app input must be normalized into Vulkan-backed resources before motion estimation and synthesis.
 - The runtime already performs API translation into its submission path. Reuse that where practical instead of designing a brand-new per-API submission stack without justification.
 - Vulkan interop currently uses timeline semaphores. Treat that as an implementation constraint that may need redesign for the final smoothing path.
+- Motion-vector estimation must not hard-depend on NVIDIA OFA. A Vulkan compute-shader optical-flow fallback must exist for non-OFA hardware.
+- Foveated motion-vector estimation is applied regardless of whether OFA or compute-shader flow is active. The fovea region is driven by `XR_EXT_eye_gaze_interaction` when available; when eye tracking is unavailable, this is skipped entirely.
+- Peripheral motion vectors produced from downsampled input must be scaled back by the downsample ratio before reaching synthesis. Failure to rescale will produce incorrect motion magnitude in the periphery.
 - Motion smoothing must not depend on reviving the abandoned API-layer architecture.
 - Runtime behavior must remain debuggable through existing logs, traces, and frame timing instrumentation.
 
@@ -128,9 +134,11 @@ The intended completion path for this fork is:
 1. Stabilize frame ownership, capture points, and observability in the current runtime.
 2. Add runtime-owned normalization and history resources that convert D3D11, D3D12, and Vulkan input into Vulkan-backed smoothing data.
 3. Advertise `XR_FB_space_warp` and implement detection of `XrCompositionLayerSpaceWarpInfoFB` at `xrEndFrame`. When present, ingest app-provided motion vectors and depth directly, bypassing OFA.
-4. Integrate OFA-based motion estimation and pose reprojection for apps that do not provide vectors.
-5. Add synthesis and hole-filling stages in the Vulkan pipeline (shared by both vector sources).
-6. Bridge the synthesized Vulkan result back into the runtime headset submission path.
-7. Upgrade the runtime scheduler so output cadence tracks the headset refresh rate even when app cadence does not.
+4. Integrate OFA-based motion estimation and pose reprojection for apps that do not provide vectors. Add a Vulkan compute-shader optical-flow fallback for GPUs without OFA hardware.
+5. Add foveated motion-vector estimation: split frames into fovea and periphery regions using eye-gaze data, downsample the periphery, run optical flow on both independently, and rescale peripheral vectors before synthesis.
+6. Add synthesis and hole-filling stages in the Vulkan pipeline (shared by all vector sources).
+7. Bridge the synthesized Vulkan result back into the runtime headset submission path.
+8. Upgrade the runtime scheduler so output cadence tracks the headset refresh rate even when app cadence does not.
+9. Add motion-smoothing controls to the companion app and implement a runtime debug overlay for performance monitoring.
 
 See `docs/ARCHITECTURE.md` for the target design and `docs/ROADMAP.md` for the phased execution plan.

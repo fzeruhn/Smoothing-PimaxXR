@@ -91,48 +91,52 @@ Make depth input usable and predictable for reprojection and synthesis.
 
 ### Main Implementation Areas
 
-- validate `XR_KHR_composition_layer_depth` ingestion on target apps
-- normalize reversed-Z, near/far, and submitted depth ranges
-- if depth is absent at the first `xrEndFrame`, log the missing extension and disable smoothing for the session (no fallback)
-- ensure depth metadata stays attached to history entries
+- ingest depth from `XrFrameSynthesisInfoEXT.depthSubImage` alongside motion vectors (depth is embedded in the frame-synthesis struct, not a separate `XR_KHR_composition_layer_depth` layer)
+- normalize reversed-Z, near/far (`nearZ`/`farZ` fields of `XrFrameSynthesisInfoEXT`), and submitted depth ranges into one internal convention
+- ensure depth metadata (normalized range, near/far) stays attached to history entries alongside the depth image
 - verify depth behavior for D3D11, D3D12, and Vulkan application inputs
 
 ### Exit Criteria
 
-- depth is normalized into one internal convention
-- runtime correctly detects and logs absent depth at first frame and disables smoothing for the session
-- history entries carry enough depth state for later processing
+- depth is normalized into one internal convention using the `nearZ`/`farZ` values from `XrFrameSynthesisInfoEXT`
+- history entries carry enough depth state for later synthesis processing
 
 ### Risks / Blockers
 
-- depth conventions may vary across engines and renderers
+- depth conventions (reversed-Z, linear vs. hyperbolic) may vary across engines and renderers
 
-## Phase 3 - Motion-Vector Sourcing: Application SpaceWarp
+## Phase 3 - Motion-Vector Sourcing: Application Frame Synthesis
 
 ### Objective
 
-Ingest app-provided motion vectors as the sole source for synthesis. App-provided vectors via `XR_FB_space_warp` are required; there is no runtime estimation fallback. If the app does not provide vectors (or depth), smoothing is disabled for the session.
+Ingest app-provided motion vectors and depth as the sole source for synthesis. `XR_EXT_frame_synthesis` is required; there is no runtime estimation fallback. If the app does not provide `XrFrameSynthesisInfoEXT`, smoothing is disabled for the session.
+
+`XR_EXT_frame_synthesis` is the OpenXR multi-vendor standard that replaces the deprecated `XR_FB_space_warp`. Unreal Engine 5.7 natively exposes this extension, making it the expected path for current and future PCVR titles.
 
 ### Main Implementation Areas
 
-- advertise `XR_FB_space_warp` in the runtime's extension list during `xrEnumerateInstanceExtensionProperties`
-- handle app creation of motion-vector swapchains (typically `R16G16B16A16_SFLOAT`) and associated depth swapchains
-- detect `XrCompositionLayerSpaceWarpInfoFB` structs attached to projection layers at `xrEndFrame`
-- on the first `xrEndFrame`, check that both `XrCompositionLayerDepthInfoKHR` and `XrCompositionLayerSpaceWarpInfoFB` are present; if either is absent, log the missing extension by name and set a session-scoped flag that disables all smoothing for the remainder of the session
-- ingest app-provided motion-vector and depth images into Vulkan-backed resources alongside the color history
-- define the coordinate-space and format mapping from the `XR_FB_space_warp` specification into the internal vector format consumed by synthesis
+- advertise `XR_EXT_frame_synthesis` in the runtime's extension list during `xrEnumerateInstanceExtensionProperties`
+- handle app creation of motion-vector swapchains (typically `R16G16B16A16_SFLOAT`) and associated depth swapchains; both are referenced inside `XrFrameSynthesisInfoEXT`
+- detect `XrFrameSynthesisInfoEXT` structs attached to projection layers at `xrEndFrame`
+- on the first `xrEndFrame`, verify `XrFrameSynthesisInfoEXT` is present; if absent, log the missing extension by name and set a session-scoped flag that disables all smoothing for the remainder of the session and restores `xrWaitFrame` to 1× pacing
+- ingest app-provided motion-vector and depth images (`motionVectorSubImage`, `depthSubImage`) into Vulkan-backed resources alongside the color history
+- define the coordinate-space and format mapping from `XrFrameSynthesisInfoEXT` into the internal vector format consumed by synthesis:
+  - motion vectors are in Vulkan NDC space, calculated as `(CurrNDC − PrevNDC).xyz`; values are not clamped to the NDC range
+  - `motionVectorScale` and `motionVectorOffset` are applied to the raw vector values before use
+  - `appSpaceDeltaPose` encodes the head-pose delta baked into the rendering; this is useful for validating head-motion separation but app vectors are already scene-only by spec
+  - depth uses `nearZ`/`farZ` from the struct (handled in Phase 2)
 
 ### Exit Criteria
 
-- runtime advertises `XR_FB_space_warp` and apps that support it can provide motion-vector and depth swapchains
-- on first `xrEndFrame`, runtime correctly detects missing depth or motion vectors, logs specifically which is absent, and disables smoothing for the session
+- runtime advertises `XR_EXT_frame_synthesis` and apps that support it can provide motion-vector and depth swapchains
+- on first `xrEndFrame`, runtime correctly detects missing `XrFrameSynthesisInfoEXT`, logs the absence, and disables smoothing for the session
 - app-provided motion-vector and depth images are ingested into Vulkan-backed resources and available to the synthesis pipeline
-- the coordinate-space and format mapping from `XrCompositionLayerSpaceWarpInfoFB` to the internal vector format is defined and validated
+- the coordinate-space mapping (`motionVectorScale`, `motionVectorOffset`, Vulkan NDC convention) is defined and validated
 
 ### Risks / Blockers
 
-- very few PCVR titles currently implement `XR_FB_space_warp`; initial testing may require a custom test harness or a game mod (e.g. UEVR) that exports vectors
-- `XR_FB_space_warp` vector format and coordinate conventions require non-trivial normalization
+- titles that only implement `XR_FB_space_warp` (not `XR_EXT_frame_synthesis`) will not work; initial testing may require UE 5.7 builds or a custom test harness
+- `motionVectorScale` / `motionVectorOffset` normalization must be applied before synthesis or vectors will be incorrectly scaled
 - Vulkan interop may need redesign because of current timeline-semaphore assumptions
 
 ## Phase 4 - Synthesis And Hole Filling
@@ -271,7 +275,7 @@ Work in this order:
 1. Stabilize ownership, capture points, and timing in the current runtime.
 2. Define and validate normalization of D3D11, D3D12, and Vulkan input into Vulkan-backed smoothing resources.
 3. Validate and normalize depth input.
-4. Advertise `XR_FB_space_warp`, implement capability detection at first `xrEndFrame`, and ingest app-provided motion vectors and depth.
+4. Advertise `XR_EXT_frame_synthesis`, implement capability detection at first `xrEndFrame`, and ingest app-provided motion vectors and depth from `XrFrameSynthesisInfoEXT`.
 5. Add synthesis and hole filling in Vulkan: velocity dilation → backward warp → depth-weighted hole-fill.
 6. Bridge synthesized Vulkan output back into headset submission.
 7. Extend the `xrWaitFrame` pacing contract to lock the app at 1/2 rate (and optionally 1/3 rate once 1/2 is stable).

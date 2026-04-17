@@ -32,7 +32,7 @@ The runtime already has important pieces that change the implementation strategy
   - builds PVR layer lists from OpenXR composition layers
   - forwards projection depth when the app provides `XR_KHR_composition_layer_depth`
   - already contains an asynchronous submission thread path
-  - will be the detection point for `XrCompositionLayerSpaceWarpInfoFB` structs attached to composition layers at `xrEndFrame`
+  - will be the detection point for `XrFrameSynthesisInfoEXT` structs attached to composition layers at `xrEndFrame`
 - `pimax-openxr/session.cpp`
   - controls mode gating and runtime settings
   - toggles `async_submission`, `defer_frame_wait`, `lock_framerate`, and related timing behavior
@@ -88,8 +88,8 @@ Our focus is exclusively: take two frames, generate motion vectors, synthesize a
 - Deterministic ownership rules for history images independent of app swapchain lifetime
 - A defined normalization step that converts D3D11, D3D12, and Vulkan inputs into Vulkan-backed smoothing resources
 - A Vulkan-backed history representation for color, depth, pose, and timestamps after normalization
-- `XR_FB_space_warp` extension advertisement, struct detection, and app-provided motion-vector ingestion
-- Capability detection at first `xrEndFrame`: verify the app provides both `XrCompositionLayerDepthInfoKHR` and `XrCompositionLayerSpaceWarpInfoFB`; if either is absent, log the missing extension by name and disable smoothing for the session
+- `XR_EXT_frame_synthesis` extension advertisement, struct detection, and app-provided motion-vector and depth ingestion
+- Capability detection at first `xrEndFrame`: verify the app provides `XrFrameSynthesisInfoEXT`; if absent, log the missing extension and disable smoothing for the session (depth is embedded in `XrFrameSynthesisInfoEXT`, so a single check covers both)
 - Depth normalization into one internal convention
 - A three-pass synthesis pipeline: velocity dilation pre-pass, backward-warp (3D reprojection using depth + app scene-motion vectors + fresh IMU pose at the target display time), and depth-weighted hole-fill for disocclusion regions
 - A scheduler that locks the app to half (or optionally one-third) headset framerate via `xrWaitFrame` pacing and chooses real vs synthesized frame at headset cadence; the existing `dbg_force_framerate_divide_by` mechanism in session.cpp is the foundation for this
@@ -105,15 +105,15 @@ Our focus is exclusively: take two frames, generate motion vectors, synthesize a
 - The smoothing pipeline itself should run in Vulkan. Non-Vulkan app input must be normalized into Vulkan-backed resources before synthesis.
 - The runtime already performs API translation into its submission path. Reuse that where practical instead of designing a brand-new per-API submission stack without justification.
 - Vulkan interop currently uses timeline semaphores. Treat that as an implementation constraint that may need redesign for the final smoothing path.
-- App-provided depth (`XR_KHR_composition_layer_depth`) and scene-motion vectors (`XR_FB_space_warp`) are both required for smoothing. If either is absent at the first `xrEndFrame`, smoothing is disabled for the session and the missing extension is logged. There is no runtime estimation fallback.
+- `XR_EXT_frame_synthesis` is required for smoothing. This single extension provides both scene-motion vectors and depth (`depthSubImage`, `nearZ`, `farZ`) in one struct (`XrFrameSynthesisInfoEXT`). If the struct is absent at the first `xrEndFrame`, smoothing is disabled for the session and the missing extension is logged. There is no runtime estimation fallback.
 - Eye tracking and foveated estimation are not part of this project. No smoothing code should depend on `XR_EXT_eye_gaze_interaction`.
 - Motion smoothing must not depend on reviving the abandoned API-layer architecture.
 - Runtime behavior must remain debuggable through existing logs, traces, and frame timing instrumentation.
 
 ## Main Files For Motion-Smoothing Work
 
-- `pimax-openxr/frame.cpp` — also the detection point for `XrCompositionLayerSpaceWarpInfoFB`
-- `pimax-openxr/session.cpp` — extension advertisement and negotiation for `XR_FB_space_warp`
+- `pimax-openxr/frame.cpp` — also the detection point for `XrFrameSynthesisInfoEXT`
+- `pimax-openxr/session.cpp` — extension advertisement and negotiation for `XR_EXT_frame_synthesis`
 - `pimax-openxr/swapchain.cpp`
 - `pimax-openxr/runtime.h`
 - `pimax-openxr/vulkan_interop.cpp`
@@ -127,7 +127,7 @@ The intended completion path for this fork is:
 
 1. Stabilize frame ownership, capture points, and observability in the current runtime.
 2. Add runtime-owned normalization and history resources that convert D3D11, D3D12, and Vulkan input into Vulkan-backed smoothing data.
-3. Advertise `XR_FB_space_warp` and implement detection at `xrEndFrame`. On the first frame, verify both `XrCompositionLayerDepthInfoKHR` and `XrCompositionLayerSpaceWarpInfoFB` are present; if either is absent, log the missing extension and disable smoothing for the session.
+3. Advertise `XR_EXT_frame_synthesis` and implement detection at `xrEndFrame`. On the first frame, verify `XrFrameSynthesisInfoEXT` is present in the composition-layer chain; if absent, log the missing extension and disable smoothing for the session. Depth is embedded in `XrFrameSynthesisInfoEXT` so no separate depth check is needed.
 4. Implement the three-pass synthesis pipeline in Vulkan: velocity dilation → backward warp (3D reprojection using app scene-motion vectors + depth + fresh IMU pose at the target display time) → depth-weighted hole-fill.
 5. Bridge the synthesized Vulkan result back into the runtime headset submission path.
 6. Extend the `xrWaitFrame` pacing contract to lock the app at 1/2 or 1/3 headset framerate, building on the existing `dbg_force_framerate_divide_by` mechanism. The 1/3 rate mode is optional and deferred until 1/2 rate is validated.

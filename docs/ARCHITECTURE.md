@@ -44,9 +44,9 @@ Our entire focus is isolated to: take two images, generate motion vectors, synth
    - depth when available
    - render pose / view state
    - timestamps and frame identifiers
-   - app-provided motion vectors and depth via `XrCompositionLayerSpaceWarpInfoFB`, when the app attaches this struct to its projection layers
+   - app-provided motion vectors and depth via `XrFrameSynthesisInfoEXT`, when the app attaches this struct to its projection layers
 3. The runtime translates the incoming API-specific resources into Vulkan-backed smoothing resources, then copies or aliases them into runtime-owned history resources.
-4. On the first `xrEndFrame`, the runtime checks the composition-layer chain for both `XrCompositionLayerDepthInfoKHR` and `XrCompositionLayerSpaceWarpInfoFB`. If either is absent, the missing extension is logged by name and smoothing is disabled for the session. There is no estimation fallback.
+4. On the first `xrEndFrame`, the runtime checks the composition-layer chain for `XrFrameSynthesisInfoEXT`. If absent, the missing extension is logged and smoothing is disabled for the session. Depth is embedded in `XrFrameSynthesisInfoEXT` (`depthSubImage`, `nearZ`, `farZ`), so a single check covers both motion vectors and depth. There is no estimation fallback.
 5. When both are present, the runtime ingests app-provided scene-motion vectors (already excluding head rotation) and depth into Vulkan-backed resources.
 6. The synthesis pipeline generates an intermediate frame for the target display time using a three-pass approach: velocity dilation → backward warp (3D reprojection using depth + scene-motion vectors + fresh IMU pose at the target display time) → depth-weighted hole-fill.
 7. A submission scheduler decides whether to submit:
@@ -63,7 +63,7 @@ Responsibilities:
 
 - capture the app-submitted frame at `xrEndFrame`
 - retain color, depth, pose, and timestamps in runtime-owned history slots
-- detect `XrCompositionLayerSpaceWarpInfoFB` in the composition-layer chain and capture app-provided motion-vector and depth images when present
+- detect `XrFrameSynthesisInfoEXT` in the composition-layer chain and capture app-provided motion-vector and depth images when present
 - keep history lifetime independent from app swapchain reuse
 - provide bounded buffering and explicit overload behavior
 - normalize D3D11, D3D12, and Vulkan input into a Vulkan-backed representation immediately or at a clearly defined capture boundary
@@ -80,10 +80,12 @@ Primary integration points:
 
 Responsibilities:
 
-- ingest `XR_KHR_composition_layer_depth` when available
-- normalize depth range and convention before synthesis
-- preserve enough metadata to support reprojection and occlusion decisions
+- ingest depth from `XrFrameSynthesisInfoEXT.depthSubImage`; `nearZ` and `farZ` from the same struct provide the depth range metadata
+- normalize reversed-Z, linear vs. hyperbolic depth, and submitted depth ranges into one internal convention before synthesis
+- preserve normalized depth and near/far metadata in history entries so synthesis and hole-fill have consistent depth access
 - keep depth handling compatible with D3D11, D3D12, and Vulkan input paths before normalization into the Vulkan smoothing path
+
+Note: the runtime continues to forward `XR_KHR_composition_layer_depth` to the PVR compositor (existing behavior), but that path is unrelated to smoothing. Smoothing depth comes exclusively from `XrFrameSynthesisInfoEXT`.
 
 Primary integration points:
 
@@ -92,25 +94,28 @@ Primary integration points:
 
 ### Motion-Vector Sourcing
 
-Motion vectors are provided exclusively by the application via `XR_FB_space_warp`. There is no runtime estimation fallback.
+Motion vectors are provided exclusively by the application via `XR_EXT_frame_synthesis`. There is no runtime estimation fallback.
 
-#### Application SpaceWarp (`XR_FB_space_warp`)
+`XR_EXT_frame_synthesis` is the OpenXR multi-vendor standard replacing the deprecated `XR_FB_space_warp`. Unreal Engine 5.7 natively exposes this extension.
 
-1. During session creation, the application queries the runtime for `XR_FB_space_warp` support. The runtime advertises the extension.
+#### Application Frame Synthesis (`XR_EXT_frame_synthesis`)
+
+1. During session creation, the application queries the runtime for `XR_EXT_frame_synthesis` support. The runtime advertises the extension.
 2. The application creates dedicated swapchains for motion vectors (typically `R16G16B16A16_SFLOAT`) and depth.
-3. At `xrEndFrame`, the application attaches an `XrCompositionLayerSpaceWarpInfoFB` struct to each projection layer. This struct references the motion-vector image, the depth image, and associated near/far plane metadata.
-4. On the **first** `xrEndFrame`, the runtime verifies that both `XrCompositionLayerDepthInfoKHR` and `XrCompositionLayerSpaceWarpInfoFB` are present. If either is absent, the runtime logs the missing extension by name and sets a session-scoped flag that disables all smoothing for the remainder of the session, restoring `xrWaitFrame` to 1× pacing.
-5. When both are present, the runtime ingests the app-provided vectors and depth into Vulkan-backed resources for use by the synthesis pipeline.
+3. At `xrEndFrame`, the application attaches an `XrFrameSynthesisInfoEXT` struct to each projection layer. This single struct contains the motion-vector image (`motionVectorSubImage`), depth image (`depthSubImage`), near/far range (`nearZ`, `farZ`), scale/offset for vectors (`motionVectorScale`, `motionVectorOffset`), and the head-pose delta baked into rendering (`appSpaceDeltaPose`).
+4. On the **first** `xrEndFrame`, the runtime verifies `XrFrameSynthesisInfoEXT` is present. If absent, the runtime logs the missing extension and sets a session-scoped flag that disables all smoothing for the remainder of the session, restoring `xrWaitFrame` to 1× pacing.
+5. When present, the runtime ingests the app-provided vectors and depth into Vulkan-backed resources for use by the synthesis pipeline.
 
 App-provided vectors represent scene motion only — they do not include head rotation. The synthesis pipeline uses a fresh IMU pose at the target display time to account for head movement during the 3D reprojection step, keeping these two concerns cleanly separated.
 
 #### Vector Format And Coordinate Mapping
 
-The coordinate-space and format mapping from `XrCompositionLayerSpaceWarpInfoFB` into the internal representation used by synthesis must be defined explicitly before synthesis work begins. This mapping covers:
+The coordinate-space and format mapping from `XrFrameSynthesisInfoEXT` into the internal representation used by synthesis must be defined explicitly before synthesis work begins. This mapping covers:
 
-- screen-space coordinate convention and scale
-- relationship between app-provided depth and the depth normalization convention from the Depth Handling subsystem
-- near/far metadata attached to the SpaceWarp struct
+- **Coordinate space:** motion vectors are in Vulkan NDC space, calculated as `(CurrNDC − PrevNDC).xyz`; values are not clamped to the NDC range and represent actual pixel displacement
+- **Scale and offset:** `motionVectorScale` and `motionVectorOffset` are applied to raw vector values before use; these must not be skipped or vectors will be incorrectly scaled
+- **Depth:** sourced from `depthSubImage` using `nearZ`/`farZ` from the same struct; normalized per the Depth Handling subsystem convention
+- **Pose delta:** `appSpaceDeltaPose` encodes the head-pose delta baked into rendering; useful for validating that head motion is not double-applied during synthesis
 
 
 ### Frame Synthesis And Hole Filling
@@ -209,7 +214,7 @@ Primary integration points:
 - `frame.cpp` stays the orchestration point for pacing and submission decisions, not the home for every smoothing algorithm.
 - Runtime-owned history is required. App-owned swapchain images are not a safe long-term history source.
 - D3D11, D3D12, and Vulkan app input are all in scope. The architecture must not assume a Vulkan-only application world.
-- App-provided depth (`XR_KHR_composition_layer_depth`) and scene-motion vectors (`XR_FB_space_warp`) are both required. If either is absent at the first `xrEndFrame`, the missing extension is logged by name and smoothing is disabled for the session. There is no estimation fallback and no degraded-quality mode.
+- `XR_EXT_frame_synthesis` is required for smoothing. This single extension provides both scene-motion vectors and depth in `XrFrameSynthesisInfoEXT`. If the struct is absent at the first `xrEndFrame`, the missing extension is logged and smoothing is disabled for the session. There is no estimation fallback and no degraded-quality mode.
 - Eye tracking and foveated estimation are not part of this project. No smoothing code should depend on `XR_EXT_eye_gaze_interaction`.
 - The scheduler must preserve valid timing semantics even when synthesis misses its deadline.
 - The smoothing pipeline should have one execution backend: Vulkan.
@@ -266,12 +271,12 @@ Without this, cadence behavior will become unstable under real game load.
 
 Do not assume that a separate high-priority queue is always available. The architecture must remain valid without that guarantee.
 
-### Gate G: Application SpaceWarp Vector Format And Coordinate Normalization
+### Gate G: `XR_EXT_frame_synthesis` Vector Format And Coordinate Normalization
 
-- Define how `XrCompositionLayerSpaceWarpInfoFB` motion-vector images are interpreted: coordinate space, scale, and handedness
-- Define the mapping from app-provided vector format into the internal representation consumed by synthesis
-- Define how app-provided depth from the SpaceWarp struct relates to the depth normalization policy from Gate D
-- Define how app-provided vectors (scene motion only, no head rotation) combine with the fresh IMU pose in the 3D reprojection step of synthesis; the head pose accounts for head movement independently of the scene-motion vectors
+- Define how `XrFrameSynthesisInfoEXT` motion-vector images are interpreted: vectors are in Vulkan NDC space as `(CurrNDC − PrevNDC).xyz`; `motionVectorScale` and `motionVectorOffset` must be applied before synthesis
+- Define the mapping from the `XrFrameSynthesisInfoEXT` vector format into the internal representation consumed by synthesis
+- Define how depth from `XrFrameSynthesisInfoEXT.depthSubImage` (with `nearZ`/`farZ`) is normalized per Gate D
+- Define how app-provided vectors (scene motion only, no head rotation) combine with the fresh IMU pose in the 3D reprojection step of synthesis; `appSpaceDeltaPose` records the head-pose delta baked into rendering and can be used to validate that head motion is not double-applied
 
 ## Completion Path
 
@@ -281,8 +286,8 @@ The architecture should be implemented in this order:
 2. Define the input normalization path that converts D3D11, D3D12, and Vulkan input into Vulkan-backed smoothing resources.
 3. Define pooled allocation, VRAM budgeting, and overload policy for Vulkan-backed history.
 4. Normalize depth and timestamp handling.
-5. Advertise `XR_FB_space_warp` and implement detection at `xrEndFrame`. On the first frame, verify both `XrCompositionLayerDepthInfoKHR` and `XrCompositionLayerSpaceWarpInfoFB` are present; if either is absent, log the missing extension and disable smoothing for the session.
-6. Define the vector format and coordinate mapping from `XrCompositionLayerSpaceWarpInfoFB` into the internal representation (Gate G).
+5. Advertise `XR_EXT_frame_synthesis` and implement detection at `xrEndFrame`. On the first frame, verify `XrFrameSynthesisInfoEXT` is present; if absent, log the missing extension and disable smoothing for the session.
+6. Define the vector format and coordinate mapping from `XrFrameSynthesisInfoEXT` into the internal representation (Gate G), including `motionVectorScale`/`motionVectorOffset` application and Vulkan NDC convention.
 7. Add synthesis and hole filling in Vulkan: velocity dilation → backward warp (3D reprojection with depth + scene-motion vectors + fresh IMU pose) → depth-weighted hole-fill.
 8. Define how synthesized Vulkan output is handed back to the headset submission backend.
 9. Extend the `xrWaitFrame` pacing contract to support `smoothing_rate_divisor` (2 or 3), building on the existing `dbg_force_framerate_divide_by` mechanism. Add scheduler decisions at headset cadence. Validate 1/2 rate before enabling 1/3 rate.

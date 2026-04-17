@@ -93,138 +93,67 @@ Make depth input usable and predictable for reprojection and synthesis.
 
 - validate `XR_KHR_composition_layer_depth` ingestion on target apps
 - normalize reversed-Z, near/far, and submitted depth ranges
-- define fallback behavior when depth is missing or unreliable
+- if depth is absent at the first `xrEndFrame`, log the missing extension and disable smoothing for the session (no fallback)
 - ensure depth metadata stays attached to history entries
 - verify depth behavior for D3D11, D3D12, and Vulkan application inputs
 
 ### Exit Criteria
 
 - depth is normalized into one internal convention
-- runtime can distinguish valid, missing, and suspect depth inputs
+- runtime correctly detects and logs absent depth at first frame and disables smoothing for the session
 - history entries carry enough depth state for later processing
 
 ### Risks / Blockers
 
-- some target applications may not submit depth consistently
 - depth conventions may vary across engines and renderers
 
-## Phase 3 - Motion-Vector Sourcing: Application SpaceWarp, OFA, And Compute-Shader Fallback
+## Phase 3 - Motion-Vector Sourcing: Application SpaceWarp
 
 ### Objective
 
-Establish all motion-vector sources and a common vector interface that feeds synthesis. Application SpaceWarp (`XR_FB_space_warp`) provides app-engine vectors when available; OFA provides hardware-accelerated runtime-estimated vectors on supported NVIDIA GPUs; a Vulkan compute-shader optical-flow implementation provides a universal fallback for all other hardware.
+Ingest app-provided motion vectors as the sole source for synthesis. App-provided vectors via `XR_FB_space_warp` are required; there is no runtime estimation fallback. If the app does not provide vectors (or depth), smoothing is disabled for the session.
 
 ### Main Implementation Areas
-
-#### 3A - Application SpaceWarp Extension Support
 
 - advertise `XR_FB_space_warp` in the runtime's extension list during `xrEnumerateInstanceExtensionProperties`
 - handle app creation of motion-vector swapchains (typically `R16G16B16A16_SFLOAT`) and associated depth swapchains
 - detect `XrCompositionLayerSpaceWarpInfoFB` structs attached to projection layers at `xrEndFrame`
+- on the first `xrEndFrame`, check that both `XrCompositionLayerDepthInfoKHR` and `XrCompositionLayerSpaceWarpInfoFB` are present; if either is absent, log the missing extension by name and set a session-scoped flag that disables all smoothing for the remainder of the session
 - ingest app-provided motion-vector and depth images into Vulkan-backed resources alongside the color history
-- validate incoming vectors (range checks, NaN handling, coverage) and fall back to runtime estimation if vectors appear malformed
-- define the coordinate-space and format mapping from the `XR_FB_space_warp` specification into the common internal vector format
-
-#### 3B - OFA Motion Estimation (Primary Runtime Fallback)
-
-- detect OFA hardware availability at session initialization (Vulkan extension query, NVAPI, or CUDA capability check)
-- define the Vulkan motion-estimation path using OFA
-- land the non-Vulkan to Vulkan normalization required to feed that estimator
-- define the queue strategy for motion-estimation work
-- remove or compensate for head motion before vector estimation
-- produce vectors, validity, and confidence data for downstream use
-- determine whether stereo uses dual estimation or adapted vectors
-
-#### 3C - Compute-Shader Optical Flow (Universal Fallback)
-
-- implement a Vulkan compute-shader optical-flow algorithm (block-matching or hierarchical Lucas-Kanade) suitable for real-time VR workloads
-- use the same Vulkan-backed input pipeline and pose-reprojection logic as the OFA path
-- produce vectors in the same common format with confidence metadata
-- target acceptable quality at higher GPU cost than OFA; this path trades estimation speed for hardware universality
-- backend selection (OFA vs. compute-shader) is a session-initialization decision based on device capability detection
-
-#### 3D - Common Motion-Vector Interface
-
-- define a single internal motion-vector representation consumed by synthesis
-- Application SpaceWarp, OFA, and compute-shader paths all produce output in this format — though maybe with different resolutions
-- include per-pixel confidence metadata (high-confidence for app vectors, OFA-reported for estimated vectors, compute-shader-reported for fallback vectors)
-- include a source tag for diagnostics and telemetry
+- define the coordinate-space and format mapping from the `XR_FB_space_warp` specification into the internal vector format consumed by synthesis
 
 ### Exit Criteria
 
-- runtime advertises `XR_FB_space_warp` and apps that support it can provide vectors
-- when app vectors are present, runtime estimation is skipped entirely for that frame
-- when app vectors are absent and OFA hardware is available, OFA produces usable motion vectors from adjacent history frames
-- when app vectors are absent and OFA hardware is unavailable, compute-shader flow produces usable motion vectors
-- all three paths produce output in the common vector format
-- motion-estimation latency is measurable and stable (both OFA and compute-shader paths)
-- estimation backend is selected at session initialization and logged for diagnostics
-- compute execution strategy is defined for both dedicated-queue and shared-queue cases
-- vector output from any path is suitable for synthesis input
-- diagnostics distinguish app-provided, OFA-estimated, and compute-shader-estimated frames
+- runtime advertises `XR_FB_space_warp` and apps that support it can provide motion-vector and depth swapchains
+- on first `xrEndFrame`, runtime correctly detects missing depth or motion vectors, logs specifically which is absent, and disables smoothing for the session
+- app-provided motion-vector and depth images are ingested into Vulkan-backed resources and available to the synthesis pipeline
+- the coordinate-space and format mapping from `XrCompositionLayerSpaceWarpInfoFB` to the internal vector format is defined and validated
 
 ### Risks / Blockers
 
 - very few PCVR titles currently implement `XR_FB_space_warp`; initial testing may require a custom test harness or a game mod (e.g. UEVR) that exports vectors
-- `XR_FB_space_warp` vector format and coordinate conventions may differ from runtime estimation output and require non-trivial normalization
+- `XR_FB_space_warp` vector format and coordinate conventions require non-trivial normalization
 - Vulkan interop may need redesign because of current timeline-semaphore assumptions
-- cross-API translation may become the real bottleneck instead of estimation itself
-- a dedicated compute queue may not be available or may not be safely usable in the bound runtime device path
-- stereo consistency may require extra work beyond a simple single-eye estimate
-- compute-shader optical flow will be significantly slower than OFA and may not meet frame-time budget on lower-end GPUs without aggressive foveation or resolution reduction
-- compute-shader flow quality may be lower than OFA; acceptable quality thresholds must be defined and tested
-
-## Phase 3B - Foveated Motion-Vector Estimation
-
-### Objective
-
-Add foveated estimation to the runtime estimation paths (OFA and compute-shader) to reduce optical-flow cost by running full-resolution flow only in the user's gaze region and downsampled flow everywhere else. This process is skipped either when no eye tracking data is available, or when disabled from config.
-
-### Main Implementation Areas
-
-- integrate `XR_EXT_eye_gaze_interaction` to acquire per-eye gaze coordinates at `xrEndFrame`
-- implement fovea region calculation: a bounding box centered on the gaze point, sized in pixels or degrees of visual angle (tunable)
-- implement peripheral downsample pass using fast Vulkan hardware blit (bilinear `vkCmdBlitImage` or lightweight compute dispatch)
-- modify the estimation dispatch to process two inputs per eye: full-resolution fovea crop and downsampled periphery
-- implement vector rescale: multiply peripheral motion vectors by the downsample ratio to restore correct screen-space magnitude
-- implement vector composite: merge fovea and rescaled periphery vectors into a single per-eye motion-vector buffer for downstream synthesis
-- expose foveated estimation parameters as runtime settings (fovea size, downsample ratio, enable/disable toggle)
-- ensure the downsample cost is less than the flow savings; add telemetry to measure both independently
-
-### Exit Criteria
-
-- foveated estimation is functional with both OFA and compute-shader backends
-- peripheral vectors are correctly rescaled; no visible motion-magnitude discontinuity at the fovea/periphery boundary
-- total estimation time (downsample + dual flow + rescale) is measurably lower than full-resolution single-pass flow
-- foveated estimation disables gracefully when eye tracking is unavailable
-- fovea size and downsample ratio are adjustable at runtime through registry settings
-- diagnostics can visualize the fovea region and report per-region flow timing
-
-### Risks / Blockers
-
-- downsample cost may exceed flow savings at small peripheral areas or low downsample ratios
-- fovea/periphery boundary may produce visible seam artifacts in synthesized output if regions overlap poorly
-- eye-tracking latency or jitter may cause the fovea to lag behind actual gaze, reducing quality in the region the user is currently looking at
-- some Pimax headset models may not support `XR_EXT_eye_gaze_interaction`
 
 ## Phase 4 - Synthesis And Hole Filling
 
 ### Objective
 
-Generate submission-ready intermediate frames for arbitrary fractional display times.
+Generate submission-ready intermediate frames by warping the most recent real frame forward to the target display time.
 
 ### Main Implementation Areas
 
-- implement bi-directional interpolation strategy
-- resolve occlusions with depth and confidence inputs
-- add a deterministic hole-filling stage
+- implement velocity dilation pre-pass: for each pixel, expand the motion-vector field outward using the maximum-magnitude vector in a 3×3 neighborhood, so fast-moving foreground objects correctly claim their destination pixels during the backward warp
+- implement backward-warp pass: for each output pixel at fractional time `f`, sample the dilated motion vector, unproject the source pixel using depth and the render camera matrix, apply `f × scene_velocity` to the 3D point, then reproject using the fresh IMU pose at the target display time to find the source sample position; mark pixels with large depth discontinuity as disocclusion holes
+- implement depth-weighted hole-fill pass: inpaint only the marked disocclusion regions using neighboring background pixels; weight contributions by depth similarity to prevent foreground content from bleeding into background holes
 - produce runtime-owned synthesized output images ready for scheduler consumption
 - ensure synthesized Vulkan output can be handed back to the current headset submission backend regardless of input API
-- synthesis consumes the common motion-vector interface and must not depend on vector source (Application SpaceWarp, OFA, or compute-shader)
 
 ### Exit Criteria
 
-- synthesized frames can be generated from runtime history
+- synthesized frames can be generated from the most recent real frame using app-provided depth and motion vectors
+- velocity dilation correctly places fast-moving foreground objects at their destination in the output
+- hole-fill covers disocclusion regions without visibly smearing foreground content into background gaps
 - output quality is stable enough for headset validation
 - synthesis output is independent from app swapchain lifetime
 
@@ -232,27 +161,31 @@ Generate submission-ready intermediate frames for arbitrary fractional display t
 
 - visual artifacts may expose weaknesses in earlier depth or vector stages
 - synthesis latency may exceed the usable scheduling budget
+- disocclusion hole quality degrades for large foreground objects moving across plain backgrounds
 
 ## Phase 5 - Runtime Scheduler At Headset Cadence
 
 ### Objective
 
-Choose the correct output path at headset cadence even when the app cadence is lower or uneven.
+Lock the app to a fractional headset framerate via `xrWaitFrame` pacing and choose the correct output at each headset display slot.
 
 ### Main Implementation Areas
 
-- compare app frame availability against headset timing targets
-- select between fresh real frame or synthesized frame (if neither is ready, pass the most recent real frame and rely on the headset's LSR for rotational correction)
-- redefine the `xrWaitFrame` contract once synthetic cadence is active
+- extend the existing `dbg_force_framerate_divide_by` / `m_lockFramerate` mechanism in `session.cpp` to support a configurable divisor (2 for half-rate, 3 for one-third-rate) read from the registry key `smoothing_rate_divisor`
+- update `xrWaitFrame` to return predicted display times spaced at `divisor × idealFrameDuration`, blocking the app thread accordingly; this is already partially in place via the `lock_framerate` path
+- select between fresh real frame or synthesized frame at each headset slot (if neither is ready, pass the most recent real frame and rely on the headset's LSR for rotational correction)
 - integrate scheduling decisions into the runtime submission path before `pvr_endFrame`
 - preserve valid OpenXR and PVR timing semantics
 
+**One-third rate mode is optional and deferred until half-rate mode is validated end-to-end.** At one-third rate, two synthesized frames are produced per real frame (at `f = 1/3` and `f = 2/3`), each requiring its own synthesis pass. Document this in code but do not implement.
+
 ### Exit Criteria
 
-- runtime output cadence tracks headset cadence
+- runtime output cadence tracks headset cadence at 1/2 rate
+- `xrWaitFrame` pacing correctly spaces app frames using the configured divisor
 - scheduler decisions are observable and repeatable
 - app frame drops do not automatically collapse runtime output cadence
-- the predicted display times exposed through `xrWaitFrame` are intentionally defined and consistent with the scheduler model
+- the `smoothing_rate_divisor` registry key is read at session initialization and logged
 
 ### Risks / Blockers
 
@@ -271,16 +204,12 @@ Harden the feature for repeated game testing and future iteration.
 - validate graceful degradation to stale frames when synthesis is unavailable due to app fps being too low (the headset's LSR handles rotational correction)
 - tune latency, queue depth, and history policy
 - validate in target games, especially Vulkan titles
-- validate compute-shader fallback
-- validate foveated estimation quality and performance across different fovea sizes and downsample ratios
 - add operational toggles for baseline, capture-only, synthesis, and full scheduler modes
 - document repeatable test and rollback procedures
 
 ### Exit Criteria
 
-- the runtime can fall back gracefully when synthesis misses deadline or inputs are invalid
-- compute-shader fallback produces acceptable quality on non-OFA hardware
-- foveated estimation produces measurable performance improvement without perceptible quality loss in the periphery
+- the runtime falls back gracefully when synthesis misses deadline or inputs are invalid
 - performance and quality are measurable on target hardware
 - engineers have a repeatable install, test, and triage loop
 
@@ -288,7 +217,6 @@ Harden the feature for repeated game testing and future iteration.
 
 - target-game behavior may expose assumptions that do not appear in synthetic tests
 - fallback rules may be too slow or too visually disruptive without explicit tuning
-- compute-shader flow quality may require per-game tuning on lower-end hardware
 
 ## Phase 7 - Companion App Controls And Debug Overlay
 
@@ -303,8 +231,7 @@ Add motion-smoothing controls to the existing companion app and implement a runt
 - add a new motion-smoothing settings panel in the companion app
 - implement the following controls, persisted through the existing registry mechanism:
   - master enable/disable toggle for motion smoothing
-  - estimation backend selector (Auto / OFA / Compute-Shader) — Auto uses OFA when available, compute-shader otherwise
-  - foveated estimation toggle (on/off) with sliders for fovea size and peripheral downsample ratio
+  - rate divisor selector (1/2 rate or 1/3 rate) — note: 1/3 rate requires session restart; persisted as `smoothing_rate_divisor`
   - debug overlay enable/disable toggle
   - debug overlay detail level (minimal / verbose)
 - add a restore-defaults action that resets all smoothing settings
@@ -314,12 +241,11 @@ Add motion-smoothing controls to the existing companion app and implement a runt
 
 - implement a lightweight in-headset overlay rendered into the compositor output before `pvr_endFrame`
 - the overlay displays:
-  - current motion-vector source per frame (App / OFA / Compute-Shader / None)
+  - smoothing active or disabled (and reason if disabled: missing depth, missing motion vectors, or user-disabled)
   - synthesis latency (ms) — time from frame intercepted to synthesized image sent to headset
-  - app cadence (FPS) vs. headset cadence (FPS) & percent of target fps achieved
+  - app cadence (FPS) vs. headset cadence (FPS) and percent of target achieved
   - frame history ring depth and recent drop count
-  - fovea region visualization: an optional wireframe rectangle showing where the fovea box is positioned on each eye
-  - estimation backend in use and whether foveated estimation is active
+  - current rate divisor in use (1/2 or 1/3)
 - overlay rendering uses existing runtime infrastructure (e.g. `FW1FontWrapper` for text, D3D11 draw calls for geometry) or a minimal Vulkan overlay path if the submission backend has moved to Vulkan by this phase
 - overlay must have negligible performance impact (< 0.1 ms per frame)
 - overlay visibility is controlled by the companion-app toggle and can be toggled at runtime without restarting the session
@@ -344,19 +270,17 @@ Work in this order:
 
 1. Stabilize ownership, capture points, and timing in the current runtime.
 2. Define and validate normalization of D3D11, D3D12, and Vulkan input into Vulkan-backed smoothing resources.
-3. Validate and normalize depth and motion-estimation inputs.
-4. Advertise `XR_FB_space_warp` and implement app-provided vector ingestion. Add OFA estimation as the primary fallback. Add compute-shader optical flow as the universal fallback. Define the common vector interface.
-5. Add foveated motion-vector estimation to the runtime estimation paths.
-6. Add synthesis and hole filling in Vulkan (consuming the common vector interface).
-7. Bridge synthesized Vulkan output back into headset submission.
-8. Only after that, enable aggressive cadence conversion and production tuning.
-9. Add companion-app controls and debug overlay as a final integration and polish phase.
+3. Validate and normalize depth input.
+4. Advertise `XR_FB_space_warp`, implement capability detection at first `xrEndFrame`, and ingest app-provided motion vectors and depth.
+5. Add synthesis and hole filling in Vulkan: velocity dilation → backward warp → depth-weighted hole-fill.
+6. Bridge synthesized Vulkan output back into headset submission.
+7. Extend the `xrWaitFrame` pacing contract to lock the app at 1/2 rate (and optionally 1/3 rate once 1/2 is stable).
+8. Add companion-app controls and debug overlay as a final integration and polish phase.
 
 This order is mandatory.
 
 - The scheduler should not be treated as the first major milestone, because it depends on reliable ownership and valid synthesis inputs.
-- Application SpaceWarp support is addressed alongside OFA and the compute-shader fallback (not after) because the common vector interface must be designed to accommodate all three sources from the start.
-- Foveated estimation is added immediately after the estimation backends because it is a performance multiplier for the compute-shader path especially.
+- There is no runtime motion estimation fallback (no OFA, no compute-shader). If the app does not provide both depth and motion vectors, smoothing is disabled for the session.
 - The companion-app and overlay work comes last because it depends on stable runtime settings and a functioning pipeline to observe.
 
 ## Validation Path
